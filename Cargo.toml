@@ -1,0 +1,25 @@
+[package]
+name = "vatsim-open-data"
+version = "0.1.0"
+edition = "2021"
+authors = ["Robin Gloster <mail@glob.in>"]
+description = "A library to parse, validate and process the VATSIM open data repository"
+# docs
+license = "MIT OR Apache-2.0"
+# repository
+
+[dependencies]
+geo = { version = "0.28.0", features = ["use-serde"] }
+geojson = "0.24.1"
+itertools = "0.13.0"
+serde = { version = "1.0.205", features = ["derive"] }
+serde_json = "1.0.124"
+thiserror = "1.0.63"
+toml = "0.8.19"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+
+[lints.clippy] # TODO fix
+let-underscore-must-use = "warn"
+print_stderr = "warn"
+pedantic = { level = "warn", priority = -1 }

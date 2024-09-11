@@ -1,10 +1,11 @@
 mod airport;
 mod position;
 mod sector;
+pub mod vateud8;
 mod volume;
 
-use serde::Serialize;
-use std::{collections::HashMap, io, path::Path};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fs::read_to_string, io, path::Path};
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -74,9 +75,33 @@ impl FIR {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct Config {
+    vateud8: Vateud8Config,
+    firs: HashMap<String, FirConfig>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Vateud8Config {
+    #[serde(default)]
+    ignore_regions: Vec<u32>,
+    #[serde(default)]
+    ignore_extra: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FirConfig {
+    vateud8_region: Option<u32>,
+    #[serde(default)]
+    vateud8_ignore: Vec<String>,
+    #[serde(default)]
+    optional_frequency: bool,
+}
+
 #[derive(Serialize)]
 pub struct OpenData {
     pub firs: HashMap<String, FIR>,
+    pub config: Config,
 }
 
 impl OpenData {
@@ -100,6 +125,7 @@ impl OpenData {
                     }
                 })
                 .collect(),
+            config: toml::from_str(&read_to_string(path.join("config.toml"))?)?,
         })
     }
 

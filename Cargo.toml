@@ -9,17 +9,28 @@ license = "MIT OR Apache-2.0"
 # repository
 
 [dependencies]
+chrono = { version = "0.4.38", features = ["serde"] }
 geo = { version = "0.28.0", features = ["use-serde"] }
 geojson = "0.24.1"
 itertools = "0.13.0"
+reqwest = { version = "0.12.7", features = [
+  "blocking",
+  "rustls-tls",
+], default-features = false }
+scraper = "0.20.0"
 serde = { version = "1.0.205", features = ["derive"] }
 serde_json = "1.0.124"
 thiserror = "1.0.63"
 toml = "0.8.19"
 tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
-[lints.clippy] # TODO fix
-let-underscore-must-use = "warn"
-print_stderr = "warn"
+[lints.clippy]
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+
+# TODO fix
+# let-underscore-must-use = "warn"
+print_stderr = "allow"
 pedantic = { level = "warn", priority = -1 }

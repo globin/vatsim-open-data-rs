@@ -41,15 +41,15 @@ pub enum GcapTier {
 pub struct Position {
     // TODO add id inside struct?
     // TODO uom frequency?
-    frequency: u32,
-    prefix: String,
-    station_type: StationType,
-    name: Option<String>,
-    radio_callsign: String,
-    cpdlc_logon: Option<String>,
+    pub frequency: u32,
+    pub prefix: String,
+    pub station_type: StationType,
+    pub name: Option<String>,
+    pub radio_callsign: String,
+    pub cpdlc_logon: Option<String>,
     #[serde(default)]
-    airspace_groups: Vec<String>,
-    gcap_tier: Option<GcapTier>,
+    pub airspace_groups: Vec<String>,
+    pub gcap_tier: Option<GcapTier>,
 }
 
 impl Position {

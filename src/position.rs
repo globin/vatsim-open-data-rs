@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs::read_to_string, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum StationType {
     #[serde(rename = "DEL")]
     ClearanceDelivery,

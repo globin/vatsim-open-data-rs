@@ -178,6 +178,7 @@ impl OpenData {
                         (fir != *other_fir || pos_id != *other_pos_id)
                             && pos.prefix.starts_with(&other_pos.prefix)
                             && pos.frequency == other_pos.frequency
+                            && pos.station_type == other_pos.station_type
                     })
                     .map(|(other_fir, other_pos, _)| {
                         Error::DuplicatePosition(

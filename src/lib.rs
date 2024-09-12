@@ -4,6 +4,7 @@ mod sector;
 pub mod vateud8;
 mod volume;
 
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs::read_to_string, io, path::Path};
 use thiserror::Error;
@@ -23,15 +24,21 @@ pub enum Error {
     #[error("Invalid volumes: {0}")]
     ParseVolume(#[from] volume::ReadError),
     #[error("Invalid volumes: {0}, {1}, {2}")]
-    InvalidVolume(String, String, volume::ConstraintError),
+    InvalidVolume(FirName, VolumeId, volume::ConstraintError),
+    #[error("Duplicate Positions: {0}-{1}, {2}-{3}")]
+    DuplicatePosition(FirName, PositionId, FirName, PositionId),
 }
 
-#[derive(Serialize)]
+type FirName = String;
+type PositionId = String;
+type VolumeId = String;
+
+#[derive(Default, Serialize)]
 pub struct FIR {
     pub airports: HashMap<String, Airport>,
-    pub positions: HashMap<String, Position>,
+    pub positions: HashMap<PositionId, Position>,
     pub sectors: HashMap<String, Sector>,
-    pub volumes: HashMap<String, Volume>,
+    pub volumes: HashMap<VolumeId, Volume>,
 }
 
 impl FIR {
@@ -75,13 +82,13 @@ impl FIR {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Config {
     vateud8: Vateud8Config,
-    firs: HashMap<String, FirConfig>,
+    firs: HashMap<FirName, FirConfig>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Vateud8Config {
     #[serde(default)]
     ignore_regions: Vec<u32>,
@@ -98,9 +105,9 @@ pub struct FirConfig {
     optional_frequency: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 pub struct OpenData {
-    pub firs: HashMap<String, FIR>,
+    pub firs: HashMap<FirName, FIR>,
     pub config: Config,
 }
 
@@ -129,6 +136,14 @@ impl OpenData {
         })
     }
 
+    fn positions(&self) -> impl Iterator<Item = (&FirName, &PositionId, &Position)> {
+        self.firs.iter().flat_map(|(fir_name, fir)| {
+            fir.positions
+                .iter()
+                .map(move |(pos_id, pos)| (fir_name, pos_id, pos))
+        })
+    }
+
     pub fn run_checks(&self) -> Result<(), Vec<Error>> {
         let errs = self
             .firs
@@ -143,6 +158,7 @@ impl OpenData {
                     .err()
             })
             .flatten()
+            .chain(self.position_dupe_check().err().unwrap_or_default())
             .collect::<Vec<_>>();
         if errs.is_empty() {
             Ok(())
@@ -150,7 +166,149 @@ impl OpenData {
             Err(errs)
         }
     }
+
+    fn position_dupe_check(&self) -> Result<(), Vec<Error>> {
+        let errors = self
+            .positions()
+            .sorted_by_key(|e| e.0)
+            .flat_map(|(fir, pos_id, pos)| {
+                self.positions()
+                    .sorted_by_key(|e| e.0)
+                    .filter(move |(other_fir, other_pos_id, other_pos)| {
+                        (fir != *other_fir || pos_id != *other_pos_id)
+                            && pos.prefix.starts_with(&other_pos.prefix)
+                            && pos.frequency == other_pos.frequency
+                    })
+                    .map(|(other_fir, other_pos, _)| {
+                        Error::DuplicatePosition(
+                            fir.to_string(),
+                            pos_id.to_string(),
+                            other_fir.to_string(),
+                            other_pos.to_string(),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::{position::StationType, Error, OpenData, Position, FIR};
+
+    #[test]
+    fn test_pos_dupe() {
+        let open_data = OpenData {
+            firs: HashMap::from([
+                (
+                    "TEST".to_string(),
+                    FIR {
+                        positions: HashMap::from([(
+                            "POS1".to_string(),
+                            Position {
+                                frequency: 134_150_000,
+                                prefix: "EDMM".to_string(),
+                                station_type: StationType::Center,
+                                radio_callsign: "Test Radar".to_string(),
+                                name: None,
+                                cpdlc_logon: None,
+                                airspace_groups: vec![],
+                                gcap_tier: None,
+                            },
+                        )]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "AAAA".to_string(),
+                    FIR {
+                        positions: HashMap::from([(
+                            "POS2".to_string(),
+                            Position {
+                                frequency: 134_150_000,
+                                prefix: "EDM".to_string(),
+                                station_type: StationType::Center,
+                                radio_callsign: "Aahh Radar".to_string(),
+                                name: None,
+                                cpdlc_logon: None,
+                                airspace_groups: vec![],
+                                gcap_tier: None,
+                            },
+                        )]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "EDMM".to_string(),
+                    FIR {
+                        positions: HashMap::from([
+                            (
+                                "DMSD".to_string(),
+                                Position {
+                                    frequency: 132_305_000,
+                                    prefix: "EDDM".to_string(),
+                                    station_type: StationType::Approach,
+                                    radio_callsign: "München Director".to_string(),
+                                    name: Some("München Director South".to_string()),
+                                    cpdlc_logon: None,
+                                    airspace_groups: vec![],
+                                    gcap_tier: None,
+                                },
+                            ),
+                            (
+                                "DMSE".to_string(),
+                                Position {
+                                    frequency: 132_305_000,
+                                    prefix: "ED".to_string(),
+                                    station_type: StationType::Approach,
+                                    radio_callsign: "München Director".to_string(),
+                                    name: Some("München Director South".to_string()),
+                                    cpdlc_logon: None,
+                                    airspace_groups: vec![],
+                                    gcap_tier: None,
+                                },
+                            ),
+                        ]),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        let check_res = open_data.position_dupe_check();
+        assert!(check_res.is_err());
+
+        let err_vec = check_res.unwrap_err();
+        eprintln!("{err_vec:?}");
+        assert_eq!(err_vec.len(), 2);
+
+        match &err_vec[0] {
+            Error::DuplicatePosition(fir1, pos1, fir2, pos2) => {
+                assert_eq!(fir1, "EDMM");
+                assert_eq!(pos1, "DMSD");
+                assert_eq!(fir2, "EDMM");
+                assert_eq!(pos2, "DMSE");
+            }
+            _ => unreachable!("must be duplicate position"),
+        }
+
+        match &err_vec[1] {
+            Error::DuplicatePosition(fir1, pos1, fir2, pos2) => {
+                assert_eq!(fir1, "TEST");
+                assert_eq!(pos1, "POS1");
+                assert_eq!(fir2, "AAAA");
+                assert_eq!(pos2, "POS2");
+            }
+            _ => unreachable!("must be duplicate position"),
+        }
+    }
+}

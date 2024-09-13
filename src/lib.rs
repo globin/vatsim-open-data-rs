@@ -30,14 +30,16 @@ pub enum Error {
 }
 
 type FirName = String;
+type AirportIcao = String;
 type PositionId = String;
+type SectorId = String;
 type VolumeId = String;
 
 #[derive(Default, Serialize)]
 pub struct FIR {
-    pub airports: HashMap<String, Airport>,
+    pub airports: HashMap<AirportIcao, Airport>,
     pub positions: HashMap<PositionId, Position>,
-    pub sectors: HashMap<String, Sector>,
+    pub sectors: HashMap<SectorId, Sector>,
     pub volumes: HashMap<VolumeId, Volume>,
 }
 
@@ -59,9 +61,16 @@ impl FIR {
             info!("Could not receive volume data from {}: {e}", path.display());
             HashMap::default()
         });
-        // TODO airports, volumes
+        let airports = Airport::from_toml(&path.join("airports.toml")).unwrap_or_else(|e| {
+            info!(
+                "Could not receive airport data from {}: {e}",
+                path.display()
+            );
+            HashMap::default()
+        });
+
         Self {
-            airports: HashMap::new(),
+            airports,
             positions,
             sectors,
             volumes,

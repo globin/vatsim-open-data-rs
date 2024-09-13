@@ -15,6 +15,12 @@ pub use position::Position;
 pub use sector::Sector;
 pub use volume::Volume;
 
+#[derive(Debug)]
+pub enum InvalidPositionReferenceType {
+    Sector,
+    Airport,
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("failed to read file: {0}")]
@@ -25,8 +31,16 @@ pub enum Error {
     ParseVolume(#[from] volume::ReadError),
     #[error("Invalid volumes: {0}, {1}, {2}")]
     InvalidVolume(FirName, VolumeId, volume::ConstraintError),
-    #[error("Duplicate Positions: {0}-{1}, {2}-{3}")]
+    #[error("Duplicate positions: {0}-{1}, {2}-{3}")]
     DuplicatePosition(FirName, PositionId, FirName, PositionId),
+    #[error("Invalid position referece: {3}-{4} (in {0:?} {1}-{2})")]
+    InvalidPositionReference(
+        InvalidPositionReferenceType,
+        FirName,
+        String,
+        FirName,
+        PositionId,
+    ),
 }
 
 type FirName = String;
@@ -153,6 +167,22 @@ impl OpenData {
         })
     }
 
+    fn sectors(&self) -> impl Iterator<Item = (&FirName, &SectorId, &Sector)> {
+        self.firs.iter().flat_map(|(fir_name, fir)| {
+            fir.sectors
+                .iter()
+                .map(move |(sector_id, sector)| (fir_name, sector_id, sector))
+        })
+    }
+
+    fn airports(&self) -> impl Iterator<Item = (&FirName, &AirportIcao, &Airport)> {
+        self.firs.iter().flat_map(|(fir_name, fir)| {
+            fir.airports
+                .iter()
+                .map(move |(icao, airport)| (fir_name, icao, airport))
+        })
+    }
+
     pub fn run_checks(&self) -> Result<(), Vec<Error>> {
         let errs = self
             .firs
@@ -168,6 +198,7 @@ impl OpenData {
             })
             .flatten()
             .chain(self.position_dupe_check().err().unwrap_or_default())
+            .chain(self.position_ref_check().err().unwrap_or_default())
             .collect::<Vec<_>>();
         if errs.is_empty() {
             Ok(())
@@ -177,12 +208,13 @@ impl OpenData {
     }
 
     fn position_dupe_check(&self) -> Result<(), Vec<Error>> {
+        info!("running position duplicate checks");
         let errors = self
             .positions()
-            .sorted_by_key(|e| e.0)
+            .sorted_by_key(|(fir, pos_id, _)| (*fir, *pos_id))
             .flat_map(|(fir, pos_id, pos)| {
                 self.positions()
-                    .sorted_by_key(|e| e.0)
+                    .sorted_by_key(|(fir, pos_id, _)| (*fir, *pos_id))
                     .filter(move |(other_fir, other_pos_id, other_pos)| {
                         (fir != *other_fir || pos_id != *other_pos_id)
                             && pos.prefix.starts_with(&other_pos.prefix)
@@ -206,13 +238,79 @@ impl OpenData {
             Err(errors)
         }
     }
+
+    fn position_ref_check(&self) -> Result<(), Vec<Error>> {
+        info!("running position reference checks");
+        let sector_errors = self
+            .sectors()
+            .sorted_by_key(|(fir, sector_id, _)| (*fir, *sector_id))
+            .flat_map(|(fir_name, sector_id, sector)| {
+                sector
+                    .position_priority
+                    .iter()
+                    .flatten()
+                    .filter(|pos_ref| {
+                        self.firs
+                            .get(pos_ref.fir.as_ref().unwrap_or(fir_name))
+                            .and_then(|fir| fir.positions.get(&pos_ref.id))
+                            .is_none()
+                    })
+                    .map(|pos_ref| {
+                        Error::InvalidPositionReference(
+                            InvalidPositionReferenceType::Sector,
+                            fir_name.clone(),
+                            sector_id.clone(),
+                            pos_ref.fir.as_ref().unwrap_or(fir_name).clone(),
+                            pos_ref.id.clone(),
+                        )
+                    })
+            });
+
+        let airport_errors = self
+            .airports()
+            .sorted_by_key(|(fir, icao, _)| (*fir, *icao))
+            .flat_map(|(fir_name, icao, airport)| {
+                airport
+                    .position_priority
+                    .iter()
+                    .flatten()
+                    .filter(|pos_ref| {
+                        self.firs
+                            .get(pos_ref.fir.as_ref().unwrap_or(fir_name))
+                            .and_then(|fir| fir.positions.get(&pos_ref.id))
+                            .is_none()
+                    })
+                    .map(|pos_ref| {
+                        Error::InvalidPositionReference(
+                            InvalidPositionReferenceType::Airport,
+                            fir_name.clone(),
+                            icao.clone(),
+                            pos_ref.fir.as_ref().unwrap_or(fir_name).clone(),
+                            pos_ref.id.clone(),
+                        )
+                    })
+            });
+
+        let errors = sector_errors.chain(airport_errors).collect::<Vec<_>>();
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use crate::{position::StationType, Error, OpenData, Position, FIR};
+    use geo::point;
+
+    use crate::{
+        position::{PositionReference, StationType},
+        Airport, Error, InvalidPositionReferenceType, OpenData, Position, Sector, FIR,
+    };
 
     #[test]
     fn test_pos_dupe() {
@@ -319,6 +417,232 @@ mod tests {
                 assert_eq!(pos2, "POS2");
             }
             _ => unreachable!("must be duplicate position"),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn test_pos_ref() {
+        let open_data = OpenData {
+            firs: HashMap::from([
+                (
+                    "TEST".to_string(),
+                    FIR {
+                        positions: HashMap::from([(
+                            "POS1".to_string(),
+                            Position {
+                                frequency: 134_150_000,
+                                prefix: "EDMM".to_string(),
+                                station_type: StationType::Center,
+                                radio_callsign: "Test Radar".to_string(),
+                                name: None,
+                                cpdlc_logon: None,
+                                airspace_groups: vec![],
+                                gcap_tier: None,
+                            },
+                        )]),
+                        airports: HashMap::from([(
+                            "CHEK".to_string(),
+                            Airport {
+                                name: "Check Airport".to_string(),
+                                iata_designator: None,
+                                location: point!(x: 0.0, y: 1.0),
+                                elevation: None,
+                                position_priority: vec![vec![
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: None,
+                                    },
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: Some("TEST".to_string()),
+                                    },
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: Some("AAAA".to_string()),
+                                    },
+                                ]],
+                                runways: vec![],
+                            },
+                        )]),
+                        sectors: HashMap::from([(
+                            "SEC1".to_string(),
+                            Sector {
+                                name: None,
+                                position_priority: vec![vec![
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: None,
+                                    },
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: Some("TEST".to_string()),
+                                    },
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: Some("AAAA".to_string()),
+                                    },
+                                ]],
+                                volumes: vec![],
+                                runway_filter: vec![],
+                            },
+                        )]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "AAAA".to_string(),
+                    FIR {
+                        airports: HashMap::from([(
+                            "ABCD".to_string(),
+                            Airport {
+                                name: "Alphabet Airport".to_string(),
+                                iata_designator: None,
+                                location: point!(x: 0.0, y: 1.0),
+                                elevation: None,
+                                position_priority: vec![vec![
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: None,
+                                    },
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: Some("TEST".to_string()),
+                                    },
+                                    PositionReference {
+                                        id: "POS2".to_string(),
+                                        fir: Some("TEST".to_string()),
+                                    },
+                                ]],
+                                runways: vec![],
+                            },
+                        )]),
+                        sectors: HashMap::from([(
+                            "ABC".to_string(),
+                            Sector {
+                                name: None,
+                                position_priority: vec![vec![
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: None,
+                                    },
+                                    PositionReference {
+                                        id: "POS1".to_string(),
+                                        fir: Some("TEST".to_string()),
+                                    },
+                                    PositionReference {
+                                        id: "POS2".to_string(),
+                                        fir: Some("TEST".to_string()),
+                                    },
+                                ]],
+                                volumes: vec![],
+                                runway_filter: vec![],
+                            },
+                        )]),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        let check_res = open_data.position_ref_check();
+        assert!(check_res.is_err());
+
+        let err_vec = check_res.unwrap_err();
+        eprintln!("{err_vec:?}");
+        assert_eq!(err_vec.len(), 6);
+
+        match &err_vec[0] {
+            Error::InvalidPositionReference(
+                InvalidPositionReferenceType::Sector,
+                fir1,
+                sec,
+                fir2,
+                pos,
+            ) => {
+                assert_eq!(fir1, "AAAA");
+                assert_eq!(sec, "ABC");
+                assert_eq!(fir2, "AAAA");
+                assert_eq!(pos, "POS1");
+            }
+            _ => unreachable!("must be invalid position reference"),
+        }
+        match &err_vec[1] {
+            Error::InvalidPositionReference(
+                InvalidPositionReferenceType::Sector,
+                fir1,
+                sec,
+                fir2,
+                pos,
+            ) => {
+                assert_eq!(fir1, "AAAA");
+                assert_eq!(sec, "ABC");
+                assert_eq!(fir2, "TEST");
+                assert_eq!(pos, "POS2");
+            }
+            _ => unreachable!("must be invalid position reference"),
+        }
+        match &err_vec[2] {
+            Error::InvalidPositionReference(
+                InvalidPositionReferenceType::Sector,
+                fir1,
+                sec,
+                fir2,
+                pos,
+            ) => {
+                assert_eq!(fir1, "TEST");
+                assert_eq!(sec, "SEC1");
+                assert_eq!(fir2, "AAAA");
+                assert_eq!(pos, "POS1");
+            }
+            _ => unreachable!("must be invalid position reference"),
+        }
+
+        match &err_vec[3] {
+            Error::InvalidPositionReference(
+                InvalidPositionReferenceType::Airport,
+                fir1,
+                airport,
+                fir2,
+                pos,
+            ) => {
+                assert_eq!(fir1, "AAAA");
+                assert_eq!(airport, "ABCD");
+                assert_eq!(fir2, "AAAA");
+                assert_eq!(pos, "POS1");
+            }
+            _ => unreachable!("must be invalid position reference"),
+        }
+        match &err_vec[4] {
+            Error::InvalidPositionReference(
+                InvalidPositionReferenceType::Airport,
+                fir1,
+                airport,
+                fir2,
+                pos,
+            ) => {
+                assert_eq!(fir1, "AAAA");
+                assert_eq!(airport, "ABCD");
+                assert_eq!(fir2, "TEST");
+                assert_eq!(pos, "POS2");
+            }
+            _ => unreachable!("must be invalid position reference"),
+        }
+        match &err_vec[5] {
+            Error::InvalidPositionReference(
+                InvalidPositionReferenceType::Airport,
+                fir1,
+                airport,
+                fir2,
+                pos,
+            ) => {
+                assert_eq!(fir1, "TEST");
+                assert_eq!(airport, "CHEK");
+                assert_eq!(fir2, "AAAA");
+                assert_eq!(pos, "POS1");
+            }
+            _ => unreachable!("must be invalid position reference"),
         }
     }
 }

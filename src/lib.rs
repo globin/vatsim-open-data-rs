@@ -188,6 +188,7 @@ impl OpenData {
             .firs
             .iter()
             .filter_map(|(fir_name, fir)| {
+                info!("running volume checks for FIR {fir_name}");
                 fir.run_checks()
                     .map_err(|errs| {
                         errs.into_iter().map(|(vol, err)| {
@@ -209,24 +210,27 @@ impl OpenData {
 
     fn position_dupe_check(&self) -> Result<(), Vec<Error>> {
         info!("running position duplicate checks");
-        let errors = self
+        let positions = self
             .positions()
             .sorted_by_key(|(fir, pos_id, _)| (*fir, *pos_id))
+            .collect::<Vec<_>>();
+        let errors = positions
+            .iter()
             .flat_map(|(fir, pos_id, pos)| {
-                self.positions()
-                    .sorted_by_key(|(fir, pos_id, _)| (*fir, *pos_id))
+                positions
+                    .iter()
                     .filter(move |(other_fir, other_pos_id, other_pos)| {
-                        (fir != *other_fir || pos_id != *other_pos_id)
+                        (fir != other_fir || pos_id != other_pos_id)
                             && pos.prefix.starts_with(&other_pos.prefix)
                             && pos.frequency == other_pos.frequency
                             && pos.station_type == other_pos.station_type
                     })
                     .map(|(other_fir, other_pos, _)| {
                         Error::DuplicatePosition(
-                            fir.to_string(),
-                            pos_id.to_string(),
-                            other_fir.to_string(),
-                            other_pos.to_string(),
+                            (*fir).to_string(),
+                            (*pos_id).to_string(),
+                            (*other_fir).to_string(),
+                            (*other_pos).to_string(),
                         )
                     })
             })

@@ -33,6 +33,19 @@ pub enum Error {
     InvalidVolume(FirName, VolumeId, volume::ConstraintError),
     #[error("Duplicate positions: {0}-{1}, {2}-{3}")]
     DuplicatePosition(FirName, PositionId, FirName, PositionId),
+    #[error(
+        "Duplicate airport designators: {0}-{}, {3}-{}, iata: \"{}\", \"{}\", other prefixes: {:?}, {:?}",
+        .1, .4, .2.iata_designator.as_deref().unwrap_or(""), .5.iata_designator.as_deref().unwrap_or(""),
+        .2.fallback_prefixes, .5.fallback_prefixes
+    )]
+    DuplicateAirport(
+        FirName,
+        AirportIcao,
+        Box<Airport>,
+        FirName,
+        AirportIcao,
+        Box<Airport>,
+    ),
     #[error("Invalid position referece: {3}-{4} (in {0:?} {1}-{2})")]
     InvalidPositionReference(
         InvalidPositionReferenceType,
@@ -199,6 +212,7 @@ impl OpenData {
             })
             .flatten()
             .chain(self.position_dupe_check().err().unwrap_or_default())
+            .chain(self.airport_dupe_check().err().unwrap_or_default())
             .chain(self.position_ref_check().err().unwrap_or_default())
             .collect::<Vec<_>>();
         if errs.is_empty() {
@@ -231,6 +245,50 @@ impl OpenData {
                             (*pos_id).to_string(),
                             (*other_fir).to_string(),
                             (*other_pos).to_string(),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn airport_dupe_check(&self) -> Result<(), Vec<Error>> {
+        info!("running airport duplicate checks");
+        let airports = self
+            .airports()
+            .sorted_by_key(|(fir, airport, _)| (*fir, *airport))
+            .collect::<Vec<_>>();
+        let errors = airports
+            .iter()
+            .flat_map(|(fir, icao, airport)| {
+                airports
+                    .iter()
+                    .filter(move |(other_fir, other_icao, other_airport)| {
+                        (fir != other_fir || icao != other_icao)
+                            && (Some(*icao) == other_airport.iata_designator.as_ref()
+                                || icao == other_icao
+                                || other_airport.fallback_prefixes.contains(icao)
+                                || airport.iata_designator.as_ref().map_or(false, |iata| {
+                                    other_airport.fallback_prefixes.contains(iata)
+                                })
+                                || other_airport
+                                    .fallback_prefixes
+                                    .iter()
+                                    .any(|prefix| airport.fallback_prefixes.contains(prefix)))
+                    })
+                    .map(|(other_fir, other_icao, other_airport)| {
+                        Error::DuplicateAirport(
+                            (*fir).to_string(),
+                            (*icao).to_string(),
+                            Box::new((*airport).clone()),
+                            (*other_fir).to_string(),
+                            (*other_icao).to_string(),
+                            Box::new((*other_airport).clone()),
                         )
                     })
             })
@@ -426,6 +484,135 @@ mod tests {
 
     #[allow(clippy::too_many_lines)]
     #[test]
+    fn test_airport_dupe() {
+        let open_data = OpenData {
+            firs: HashMap::from([
+                (
+                    "TEST".to_string(),
+                    FIR {
+                        airports: HashMap::from([(
+                            "LIPB".to_string(),
+                            Airport {
+                                name: "Bolzano".to_string(),
+                                iata_designator: Some("BLZ".to_string()),
+                                fallback_prefixes: vec![],
+                                location: point! {x: 0.0, y: 0.0},
+                                elevation: None,
+                                position_priority: vec![],
+                                runways: vec![],
+                            },
+                        )]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "AAAA".to_string(),
+                    FIR {
+                        airports: HashMap::from([
+                            (
+                                "BLZ".to_string(),
+                                Airport {
+                                    name: "Weird IATA Airport".to_string(),
+                                    iata_designator: None,
+                                    fallback_prefixes: vec![],
+                                    location: point! {x: 0.0, y: 0.0},
+                                    elevation: None,
+                                    position_priority: vec![],
+                                    runways: vec![],
+                                },
+                            ),
+                            (
+                                "LIPB".to_string(),
+                                Airport {
+                                    name: "Double ICAO Airport".to_string(),
+                                    iata_designator: None,
+                                    fallback_prefixes: vec![],
+                                    location: point! {x: 0.0, y: 0.0},
+                                    elevation: None,
+                                    position_priority: vec![],
+                                    runways: vec![],
+                                },
+                            ),
+                            (
+                                "ABCD".to_string(),
+                                Airport {
+                                    name: "Prefix double".to_string(),
+                                    iata_designator: None,
+                                    fallback_prefixes: vec!["BLZ".to_string()],
+                                    location: point! {x: 0.0, y: 0.0},
+                                    elevation: None,
+                                    position_priority: vec![],
+                                    runways: vec![],
+                                },
+                            ),
+                        ]),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        let check_res = open_data.airport_dupe_check();
+        assert!(check_res.is_err());
+
+        let err_vec = check_res.unwrap_err();
+        eprintln!("{err_vec:?}");
+        assert_eq!(err_vec.len(), 5);
+
+        match &err_vec[0] {
+            Error::DuplicateAirport(fir1, icao1, _, fir2, icao2, _) => {
+                assert_eq!(fir1, "AAAA");
+                assert_eq!(icao1, "BLZ");
+                assert_eq!(fir2, "AAAA");
+                assert_eq!(icao2, "ABCD");
+            }
+            _ => unreachable!("must be duplicate airport"),
+        }
+
+        match &err_vec[1] {
+            Error::DuplicateAirport(fir1, icao1, _, fir2, icao2, _) => {
+                assert_eq!(fir1, "AAAA");
+                assert_eq!(icao1, "BLZ");
+                assert_eq!(fir2, "TEST");
+                assert_eq!(icao2, "LIPB");
+            }
+            _ => unreachable!("must be duplicate airport"),
+        }
+
+        match &err_vec[2] {
+            Error::DuplicateAirport(fir1, icao1, _, fir2, icao2, _) => {
+                assert_eq!(fir1, "AAAA");
+                assert_eq!(icao1, "LIPB");
+                assert_eq!(fir2, "TEST");
+                assert_eq!(icao2, "LIPB");
+            }
+            _ => unreachable!("must be duplicate airport"),
+        }
+
+        match &err_vec[3] {
+            Error::DuplicateAirport(fir1, icao1, _, fir2, icao2, _) => {
+                assert_eq!(fir1, "TEST");
+                assert_eq!(icao1, "LIPB");
+                assert_eq!(fir2, "AAAA");
+                assert_eq!(icao2, "ABCD");
+            }
+            _ => unreachable!("must be duplicate airport"),
+        }
+
+        match &err_vec[4] {
+            Error::DuplicateAirport(fir1, icao1, _, fir2, icao2, _) => {
+                assert_eq!(fir1, "TEST");
+                assert_eq!(icao1, "LIPB");
+                assert_eq!(fir2, "AAAA");
+                assert_eq!(icao2, "LIPB");
+            }
+            _ => unreachable!("must be duplicate airport"),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
     fn test_pos_ref() {
         let open_data = OpenData {
             firs: HashMap::from([
@@ -449,6 +636,7 @@ mod tests {
                             "CHEK".to_string(),
                             Airport {
                                 name: "Check Airport".to_string(),
+                                fallback_prefixes: vec![],
                                 iata_designator: None,
                                 location: point!(x: 0.0, y: 1.0),
                                 elevation: None,
@@ -502,6 +690,7 @@ mod tests {
                             Airport {
                                 name: "Alphabet Airport".to_string(),
                                 iata_designator: None,
+                                fallback_prefixes: vec![],
                                 location: point!(x: 0.0, y: 1.0),
                                 elevation: None,
                                 position_priority: vec![vec![

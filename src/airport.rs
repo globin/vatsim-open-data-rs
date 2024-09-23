@@ -9,6 +9,8 @@ use crate::position::PositionReference;
 pub struct Airport {
     pub name: String,
     pub iata_designator: Option<String>,
+    #[serde(default)]
+    pub fallback_prefixes: Vec<String>,
     pub location: Point,
     pub elevation: Option<i32>,
     pub position_priority: Vec<Vec<PositionReference>>,

@@ -34,9 +34,9 @@ pub enum Error {
     #[error("Duplicate positions: {0}-{1}, {2}-{3}")]
     DuplicatePosition(FirName, PositionId, FirName, PositionId),
     #[error(
-        "Duplicate airport designators: {0}-{}, {3}-{}, iata: \"{}\", \"{}\", other prefixes: {:?}, {:?}",
-        .1, .4, .2.iata_designator.as_deref().unwrap_or(""), .5.iata_designator.as_deref().unwrap_or(""),
-        .2.fallback_prefixes, .5.fallback_prefixes
+        "Duplicate airport designators: {fir1}-{icao1}, {fir2}-{icao2}, iata: \"{iata1}\", \"{iata2}\", other prefixes: {fb1:?}, {fb2:?}",
+        fir1=.0, icao1=.1, fir2=.3, icao2=.4, iata1=.2.iata_designator.as_deref().unwrap_or(""), 
+        iata2=.5.iata_designator.as_deref().unwrap_or(""), fb1=.2.fallback_prefixes, fb2=.5.fallback_prefixes
     )]
     DuplicateAirport(
         FirName,

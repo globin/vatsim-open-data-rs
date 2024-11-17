@@ -47,6 +47,7 @@
           default = pkgs.mkShell {
             buildInputs = with pkgs; [
               rust-bin.stable.latest.default
+              cargo-tarpaulin
               cargo-watch
               config.treefmt.build.wrapper
             ];
